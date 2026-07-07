@@ -194,6 +194,25 @@ def use_native_matmul(mat1, mat2):
     return True
 
 
+def _use_small_mm_pointwise(k, n, layout) -> bool:
+    """Emit pointwise unsqueeze+mul+sum instead of a GEMM kernel for small K and N.
+
+    When both K and N are below 8 the cuBLAS / Triton GEMM launch overhead
+    dominates and a fused pointwise Triton kernel is 1.6-5x faster (measured
+    with triton.testing.do_bench on H200, RTX 4080, and A100).
+    Skipped under max-autotune so template selection is not short-circuited.
+    See https://github.com/pytorch/pytorch/issues/186348
+    """
+    if config.max_autotune or config.max_autotune_gemm:
+        return False
+    if layout.device.type in ("cpu", "mps"):
+        return False
+    threshold = 8
+    return V.graph.sizevars.statically_known_true(
+        k < threshold
+    ) and V.graph.sizevars.statically_known_true(n < threshold)
+
+
 def _is_static_problem(layout: Layout) -> tuple[bool, bool]:
     """
     Check if input tensors and output layout have static shapes and non-zero sizes.
